@@ -1,12 +1,19 @@
 import functools
+import os
+from prometheus_fastapi_instrumentator import Instrumentator
 
 import uvicorn
 from fastapi import FastAPI, UploadFile, requests, HTTPException
 from pymongo import MongoClient
 import models
 import requests
+import aiohttp
+
+MONGO_URL = os.getenv('MONGO_URL') or "mongodb://root:example@localhost:27017"
 
 app = FastAPI()
+
+Instrumentator().instrument(app).expose(app)
 
 @functools.lru_cache()
 def mongo_data_collection():
@@ -37,11 +44,6 @@ def get_verdict_item(hash):
 
 @app.post("/events/")
 async def events(event: models.Event):
-    # file_verdict = get_verdict_item(event.file.file_hash)
-    # process_verdict = get_verdict_item(event.last_access.hash)
-    #
-    # verdict = models.Verdict(file=file_verdict, process=process_verdict)
-    # return verdict
     response = {}
 
     for key, md5 in [('file', event.file.file_hash), ('process', event.last_access.hash)]:
@@ -55,21 +57,52 @@ async def events(event: models.Event):
 
     return models.Verdict(**response)
 
+
+async def scan_file_async(file_content):
+    url = "https://beta.nimbus.bitdefender.net/liga-ac-labs-cloud/blackbox-scanner/"
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data={"file": file_content}) as response:
+            if response.status != 200:
+                raise HTTPException(status_code=400, detail=f"Request failed with status code {response.status}")
+            response_json = await response.json()
+            md5 = response_json['hash']
+            risk_level = response_json['risk_level']
+            verdict = models.VerdictItem(hash=md5, risk_level=risk_level)
+            collection.insert_one(verdict.dict())
+            print(f'Item created, {verdict=}')
+            return verdict
+
+
 @app.post("/scan_file/")
 async def scan_file(file: UploadFile):
     file_content = await file.read()
 
     url = "https://beta.nimbus.bitdefender.net/liga-ac-labs-cloud/blackbox-scanner/"
+
+    # async
     try:
-        black_box_api_response = requests.post(url, files={"file": ("file.txt", file_content)}).json()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data={"file": file_content}) as response:
+                response_json = await response.json()
+                md5 = response_json['hash']
+                risk_level = response_json['risk_level']
+                verdict = models.VerdictItem(hash=md5, risk_level=risk_level)
+                collection.insert_one(verdict.dict())
+                print(f'Item created, {verdict=}')
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    md5 = black_box_api_response['hash']
-    risk_level = black_box_api_response['risk_level']
-    verdict = models.VerdictItem(hash=md5, risk_level=risk_level)
-    collection.insert_one(verdict.dict())
-    print(f'Item created, {verdict=}')
+    # # sync
+    # try:
+    #     black_box_api_response = requests.post(url, files={"file": ("file.txt", file_content)}).json()
+    #     md5 = black_box_api_response['hash']
+    #     risk_level = black_box_api_response['risk_level']
+    #     verdict = models.VerdictItem(hash=md5, risk_level=risk_level)
+    #     collection.insert_one(verdict.dict())
+    #     print(f'Item created, {verdict=}')
+    # except Exception as e:
+    #     raise HTTPException(status_code=400, detail=str(e))
+
     return verdict
 
 
