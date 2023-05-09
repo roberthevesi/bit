@@ -33,3 +33,10 @@ services:
       - "3000:3000"
     volumes:
       - ./grafana:/var/lib/grafana
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis_data:/data

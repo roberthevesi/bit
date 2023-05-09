@@ -5,4 +5,5 @@ requests
 fastapi
 uvicorn
 python-multipart
+redis
 prometheus-fastapi-instrumentator

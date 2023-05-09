@@ -8,6 +8,8 @@ from pymongo import MongoClient
 import models
 import requests
 import aiohttp
+import redis
+import json
 
 MONGO_URL = os.getenv('MONGO_URL') or "mongodb://root:example@localhost:27017"
 
@@ -42,12 +44,23 @@ def get_verdict_item(hash):
     return verdict_item
 
 
+redis_client = redis.Redis(host='redis', port=6379, db=0)
+
+
 @app.post("/events/")
 async def events(event: models.Event):
     response = {}
 
     for key, md5 in [('file', event.file.file_hash), ('process', event.last_access.hash)]:
-        data = collection.find_one({"hash": md5})
+        redis_result = redis_client.get(md5)
+        if redis_result is None:
+            data = collection.find_one({"hash": md5})
+            if data is not None:
+                data.pop('_id', None)
+                redis_client.set(md5, json.dumps(data))
+        else:
+            data = json.loads(redis_result)
+
         if data is not None:
             risk_level = data['risk_level']
         else:
@@ -83,9 +96,9 @@ async def scan_file(file: UploadFile):
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data={"file": file_content}) as response:
-                response_json = await response.json()
-                md5 = response_json['hash']
-                risk_level = response_json['risk_level']
+                json_response = await response.json()
+                md5 = json_response['hash']
+                risk_level = json_response['risk_level']
                 verdict = models.VerdictItem(hash=md5, risk_level=risk_level)
                 collection.insert_one(verdict.dict())
                 print(f'Item created, {verdict=}')
